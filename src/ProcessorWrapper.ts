@@ -1,4 +1,5 @@
 import { type ProcessorOptions, type Track, type TrackProcessor } from 'livekit-client';
+import { type FrameTicker, createFrameTicker } from './FrameTicker';
 import { TrackTransformer, TrackTransformerDestroyOptions } from './transformers';
 import { createCanvas, waitForTrackResolution } from './utils';
 import { LoggerNames, getLogger } from './logger';
@@ -72,7 +73,7 @@ export default class ProcessorWrapper<
   // For fallback rendering with canvas.captureStream()
   private capturedStream?: MediaStream;
 
-  private animationFrameId?: number;
+  private frameTicker?: FrameTicker;
 
   private renderContext?: CanvasRenderingContext2D;
 
@@ -253,6 +254,7 @@ export default class ProcessorWrapper<
     // Store the last processed timestamp to avoid duplicate processing
     let lastVideoTimestamp = -1;
     let lastFrameTime = 0;
+    let lastResumeAttempt = 0;
     const videoElement = this.sourceDummy as HTMLVideoElement;
     const minFrameInterval = 1000 / this.maxFps; // Minimum time between frames
 
@@ -263,7 +265,7 @@ export default class ProcessorWrapper<
     let frameCount = 0;
     let lastFpsLog = 0;
 
-    const renderLoop = () => {
+    const renderFrame = () => {
       if (
         !this.processingEnabled ||
         !this.sourceDummy ||
@@ -274,10 +276,13 @@ export default class ProcessorWrapper<
       }
 
       if (this.sourceDummy.paused) {
-        this.log.warn('Video is paused, trying to play');
-        this.sourceDummy.play().then(() => {
-          this.animationFrameId = requestAnimationFrame(renderLoop);
-        });
+        if (performance.now() - lastResumeAttempt > 1000) {
+          lastResumeAttempt = performance.now();
+          this.log.warn('Video is paused, trying to play');
+          this.sourceDummy
+            .play()
+            .catch((e) => this.log.warn('Could not resume the source video:', e));
+        }
         return;
       }
 
@@ -351,10 +356,11 @@ export default class ProcessorWrapper<
           this.log.error('Error in render loop:', e);
         }
       }
-      this.animationFrameId = requestAnimationFrame(renderLoop);
     };
 
-    this.animationFrameId = requestAnimationFrame(renderLoop);
+    // Ticking at twice maxFps leaves the frame gate above room to hit its interval: pacing the
+    // ticker at exactly maxFps makes normal jitter miss it every other tick and halves the rate.
+    this.frameTicker = createFrameTicker(1000 / (this.maxFps * 2), renderFrame);
   }
 
   async restart(opts: ProcessorOptions<Track.Kind>): Promise<void> {
@@ -386,10 +392,8 @@ export default class ProcessorWrapper<
   private async cleanup() {
     if (this.useStreamFallback) {
       this.processingEnabled = false;
-      if (this.animationFrameId) {
-        cancelAnimationFrame(this.animationFrameId);
-        this.animationFrameId = undefined;
-      }
+      this.frameTicker?.stop();
+      this.frameTicker = undefined;
       if (this.displayCanvas && this.displayCanvas.parentNode) {
         this.displayCanvas.parentNode.removeChild(this.displayCanvas);
       }
