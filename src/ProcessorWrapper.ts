@@ -8,7 +8,8 @@ type ProcessorWrapperLifecycleState = 'idle' | 'initializing' | 'running' | 'med
 
 export interface ProcessorWrapperOptions {
   /**
-   * Maximum frame rate for fallback canvas.captureStream implementation
+   * Maximum frame rate for fallback canvas.captureStream implementation.
+   * Must be a positive finite number.
    * Default: 30
    */
   maxFps?: number;
@@ -96,6 +97,10 @@ export default class ProcessorWrapper<
     this.name = name;
     this.transformer = transformer;
     this.maxFps = options.maxFps ?? 30;
+
+    if (!Number.isFinite(this.maxFps) || this.maxFps <= 0) {
+      throw new RangeError(`maxFps must be a positive number, got ${this.maxFps}`);
+    }
   }
 
   private async setup(opts: ProcessorOptions<Track.Kind>) {
